@@ -7,6 +7,7 @@
 #include <arch/zxn.h>
 #include <input.h>
 #include <z80.h>
+#include <im2.h>
 #include <intrinsic.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -17,9 +18,68 @@
 
 #include "zxnext/src/dma.h"
 #include "zxnext/src/bank.h"
+#include "zxnext/src/ctc.h"
 
 #include "samples.h"
 #include "globals.h"
+
+#if USE_CTC
+
+// CTC sample playback state
+static volatile uint8_t *sample_ptr;
+static volatile uint16_t sample_remaining;
+static volatile uint8_t *sample_loop_ptr;
+static volatile uint16_t sample_loop_length;
+static volatile bool sample_playing;
+static volatile bool sample_looping;
+
+IM2_DEFINE_ISR(ctc_sample_isr)
+{
+    if (!sample_playing)
+        return;
+
+    z80_outp(SAMPLE_COVOX_PORT, *sample_ptr++);
+
+    if (--sample_remaining == 0)
+    {
+        if (sample_looping)
+        {
+            sample_ptr = sample_loop_ptr;
+            sample_remaining = sample_loop_length;
+        }
+        else
+        {
+            sample_playing = false;
+            ctc_stop(CTC_SAMPLE_CHANNEL);
+        }
+    }
+}
+
+static void ctc_play_sample(void *source, uint16_t length, bool loop)
+{
+    // Stop any currently playing sample
+    ctc_stop(CTC_SAMPLE_CHANNEL);
+    sample_playing = false;
+
+    // Set up sample state
+    sample_ptr = (uint8_t *)source;
+    sample_remaining = length;
+    sample_loop_ptr = (uint8_t *)source;
+    sample_loop_length = length;
+    sample_looping = loop;
+    sample_playing = true;
+
+    // Start the CTC timer with interrupts
+    ctc_init(CTC_SAMPLE_CHANNEL, CTC_SAMPLE_TC, CTC_SAMPLE_PRESCALER_256, true);
+}
+
+static void ctc_stop_sample(void)
+{
+    ctc_stop(CTC_SAMPLE_CHANNEL);
+    sample_playing = false;
+}
+
+#endif
 
 static uint8_t scalers[] =
 {
@@ -69,16 +129,22 @@ static void isr_init(void)
 {
     // Set up IM2 interrupt service routine:
     // Put Z80 in IM2 mode with a 257-byte interrupt vector table located
-    // at 0x8000 (before CRT_ORG_CODE) filled with 0x81 bytes. Install the
-    // vt_play_isr() interrupt service routine at the interrupt service routine
-    // entry at address 0x8181.
+    // at 0x8000 (before CRT_ORG_CODE) filled with 0x81 bytes. Install an
+    // interrupt service routine at the entry at address 0x8181.
 
     intrinsic_di();
     im2_init((void *) 0x8000);
     memset((void *) 0x8000, 0x81, 257);
+#if USE_CTC
+    // Install CTC sample ISR via JP instruction
+    z80_bpoke(0x8181, 0xC3);
+    z80_wpoke(0x8182, (uint16_t)ctc_sample_isr);
+#else
+    // Install empty ISR (EI; RETI)
     z80_bpoke(0x8181, 0xFB);
     z80_bpoke(0x8182, 0xED);
     z80_bpoke(0x8183, 0x4D);
+#endif
     intrinsic_ei();
 }
 
@@ -103,7 +169,11 @@ int main(void)
             uint8_t *sample_source = zxn_addr_from_mmu(SAMPLE_MMU) + (uint16_t)sample_table[sample_index].start;
             uint16_t sample_length = (uint16_t)sample_table[sample_index].end - (uint16_t)sample_table[sample_index].start;
             
+#if USE_CTC
+            ctc_play_sample((void *)sample_source, sample_length, sample_table[sample_index].loop);
+#else
             dma_transfer_sample((void *)sample_source, sample_length, SAMPLE_SCALER*12, sample_table[sample_index].loop);
+#endif
 
             if (sample_table[++sample_index].start == (void *)0xffff)
                 sample_index = 0;

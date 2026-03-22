@@ -1,4 +1,5 @@
 zxnext/src/bank.c
+zxnext/src/ctc.c
 zxnext/src/dma.c
 src/samples.asm
 src/main.c
