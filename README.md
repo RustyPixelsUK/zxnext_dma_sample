@@ -24,6 +24,13 @@ following command:
 4. Run the zxnext_dma_sample/bin/zxnext_dma_sample.nex file in your
 Sinclair ZX Spectrum emulator.
 
+## Audio Format
+- 8-bit unsigned mono at 8 kHz. You can convert using sox:
+
+```sh
+sox input.ogg -v 0.9 -r 8000 -c 1 -t u8 output.pcm
+```
+
 ## Screenshot
 ![](screenshot.png)
 
